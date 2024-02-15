@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:bloc/bloc.dart';
-import 'dart:math' as math show Random;
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 void main() {
   runApp(const MyApp());
@@ -9,107 +12,163 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Flutter Demo',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: BlocProvider(
+        create: (_) => PersonBloc(),
+        child: const MyHomePage(),
+      ),
     );
   }
 }
 
-const name = ['foo', 'bar', 'baz'];
-
-extension RandomElement<T> on Iterable<T> {
-  T getRandomElement() => elementAt(math.Random().nextInt(length));
+@immutable
+abstract class LoadAction {
+  const LoadAction();
 }
 
-class NameCubit extends Cubit<String?> {
-  NameCubit() : super(null);
+@immutable
+class LoadPersonAction implements LoadAction {
+  final Personsurl url;
 
-  void pickRandomName() => emit(name.getRandomElement());
+  const LoadPersonAction({required this.url}) : super();
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-  final String title;
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+@immutable
+class Person {
+  final String name;
+  final int age;
+
+  const Person({required this.name, required this.age});
+
+  Person.fromJson(Map<String, dynamic> json)
+      : name = json['name'] as String,
+        age = json['age'] as int;
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  late final NameCubit cubit;
+enum Personsurl {
+  persons1,
+  persons2,
+}
 
-  @override
-  void initState() {
-    cubit = NameCubit();
-    super.initState();
+extension UrlString on Personsurl {
+  String get urlString {
+    switch (this) {
+      case Personsurl.persons1:
+        return 'http://127.0.0.1:5500/api/person1.json';
+      case Personsurl.persons2:
+        return 'http://127.0.0.1:5500/api/person2.json';
+    }
   }
+}
+
+Future<Iterable<Person>> getPersons(String url) => HttpClient()
+    .getUrl(Uri.parse(url))
+    .then((req) => req.close())
+    .then((res) => res.transform(utf8.decoder).join())
+    .then((str) => json.decode(str) as List<dynamic>)
+    .then((list) => list.map((e) => Person.fromJson(e)));
+
+@immutable
+class FetchResult {
+  final Iterable<Person> persons;
+  final bool isRetrieveFromChace;
+
+  const FetchResult({required this.persons, required this.isRetrieveFromChace});
 
   @override
-  void dispose() {
-    cubit.close();
-    super.dispose();
+  String toString() {
+    return 'FetchResult(isRetrieveFromChace = $isRetrieveFromChace,persons = $persons)';
   }
+}
 
+class PersonBloc extends Bloc<LoadAction, FetchResult?> {
+  final Map<Personsurl, Iterable<Person>> _chace = {};
+  PersonBloc() : super(null) {
+    on<LoadPersonAction>((event, emit) async {
+      final url = event.url;
+      if (_chace.containsKey(url)) {
+        final chacedPerson = _chace[url]!;
+
+        final result = FetchResult(
+          persons: chacedPerson,
+          isRetrieveFromChace: true,
+        );
+        emit(result);
+      } else {
+        final persons = await getPersons(url.urlString);
+        _chace[url] = persons;
+        final result = FetchResult(
+          isRetrieveFromChace: false,
+          persons: persons,
+        );
+        emit(result);
+      }
+    });
+  }
+}
+
+extension Subcript<T> on Iterable<T> {
+  T? operator [](int index) => length > index ? elementAt(index) : null;
+}
+
+class MyHomePage extends StatelessWidget {
+  const MyHomePage({super.key});
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Home Page')),
-      body: StreamBuilder<String?>(
-        stream: cubit.stream,
-        builder: (context, snapshot) {
-          final button = TextButton(
-              onPressed: () => cubit.pickRandomName(), child: const Text('Pick Random Name'));
+      body: Column(children: [
+        Row(
+          children: [
+            TextButton(
+              onPressed: () {
+                context.read<PersonBloc>().add(
+                      const LoadPersonAction(url: Personsurl.persons1),
+                    );
+              },
+              child: const Text('Load Json #1'),
+            ),
+            TextButton(
+              onPressed: () {
+                context.read<PersonBloc>().add(
+                      const LoadPersonAction(url: Personsurl.persons2),
+                    );
+              },
+              child: const Text('Load Json #2'),
+            ),
+          ],
+        ),
+        BlocBuilder<PersonBloc, FetchResult?>(
+          buildWhen: (previousResult, currentResult) {
+            return previousResult?.persons != currentResult?.persons;
+          },
+          builder: ((context, FetchResult) {
+            final persons = FetchResult?.persons;
+            if (persons == null) {
+              return const SizedBox();
+            }
 
-          switch (snapshot.connectionState) {
-            case ConnectionState.none:
-              return Column(
-                children: [
-                  button,
-                  const Text('none'),
-                ],
-              );
-              
-            case ConnectionState.waiting:
-              return Column(
-                children: [
-                  button,
-                  const Text('waiting'),
-                ],
-              );
-            case ConnectionState.active:
-              return Column(
-                children: [
-                  Text(snapshot.data ?? ''),
-                  button,
-                ],
-              );
-            case ConnectionState.done:
-              return const Text('selesai');
-          }
-        },
-      ),
+            return Expanded(
+              child: ListView.builder(
+                  itemCount: persons.length,
+                  itemBuilder: (context, index) {
+                    final person = persons[index]!;
+                    return ListTile(
+                      title: Text(person.name),
+                    );
+                  }),
+            );
+          }),
+        )
+      ]),
     );
   }
 }
